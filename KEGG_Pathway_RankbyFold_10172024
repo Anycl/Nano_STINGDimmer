@@ -1,0 +1,101 @@
+library(DESeq2)
+library(clusterProfiler)
+library(org.Mm.eg.db)
+library(ggplot2)
+
+gene_id_file <- "/Users/beanlee/Desktop/JST_Nano_Dimer/Treated_Control/ClusterProfiler/JST_NanoDimer_Control_Treated_CP.csv"
+gene_data <- read.csv(gene_id_file)
+
+count_matrix <- gene_data[, -c(1:3)]
+rownames(count_matrix) <- gene_data$ENSEMBL
+
+if (!all(sapply(count_matrix, is.numeric))) {
+  stop("Count matrix contains non-numeric values.")
+}
+
+condition <- factor(c("Control", "Control", "Control", "Treated", "Treated", "Treated"))
+
+if (ncol(count_matrix) != length(condition)) {
+  stop("Mismatch between number of samples and conditions.")
+}
+
+sample_info <- data.frame(
+  condition = condition,
+  row.names = colnames(count_matrix)
+)
+
+dds <- DESeqDataSetFromMatrix(countData = count_matrix,
+                              colData = sample_info,
+                              design = ~ condition)
+
+dds <- DESeq(dds)
+
+dds <- dds[rowMeans(counts(dds, normalized = TRUE)) >= 200, ]
+
+res <- results(dds, contrast = c("condition", "Treated", "Control"))
+
+res <- res[abs(res$log2FoldChange) >= 1, ]
+
+res <- res[order(res$padj), ]
+
+sig_genes <- res[which(res$padj < 0.05), ]
+
+sig_ensembl_ids <- rownames(sig_genes)
+
+sig_gene_data <- gene_data[gene_data$ENSEMBL %in% sig_ensembl_ids, ]
+
+sig_gene_data <- sig_gene_data[!is.na(sig_gene_data$ENTREZID) & sig_gene_data$ENTREZID != "", ]
+
+entrez_ids <- sig_gene_data$ENTREZID
+
+enrich_pathway <- enrichKEGG(gene = entrez_ids,
+                             organism = 'mmu',
+                             pvalueCutoff = 0.05)
+
+if (!is.null(enrich_pathway)) {
+    enrich_results_df <- as.data.frame(enrich_pathway@result)
+    
+    enrich_results_df$BgRatioNumeric <- as.numeric(sub("/.*", "", enrich_results_df$BgRatio)) / 
+                                        as.numeric(sub(".*/", "", enrich_results_df$BgRatio))
+    
+    enrich_results_df <- enrich_results_df[order(enrich_results_df$BgRatioNumeric, decreasing = TRUE), ]
+    
+    enrich_pathway@result <- enrich_results_df
+    
+    p <- dotplot(enrich_pathway) +
+        theme(
+            axis.text.x = element_text(size = 8),
+            axis.text.y = element_text(size = 8)
+        )
+    print(p)
+} else {
+    print("No KEGG pathways were enriched.")
+}
+
+output_directory <- "/Users/beanlee/Desktop/JST_Nano_Dimer/Treated_Control"
+
+if (!dir.exists(output_directory)) {
+    dir.create(output_directory, recursive = TRUE)
+}
+
+deseq2_results_file <- file.path(output_directory, "DESeq2_results_Treated_vs_Control_2fold_High200.csv")
+write.csv(as.data.frame(res), deseq2_results_file)
+
+if (!is.null(enrich_pathway)) {
+    pathway_results_file <- file.path(output_directory, "pathway_enrichment_results_Treated_Control_2fold_High200.csv")
+    write.csv(as.data.frame(enrich_pathway), pathway_results_file)
+}
+
+tiff_filename <- file.path(output_directory, "clusterProfiler_Treated_Con_2fold_High200.tiff")
+
+tiff(filename = tiff_filename, width = 4000, height = 3000, res = 600)
+
+p <- dotplot(enrich_pathway, showCategory = 20) +
+    theme(
+        axis.text.x = element_text(size = 8),
+        axis.text.y = element_text(size = 3)
+    )
+
+print(p)
+
+dev.off()
